@@ -72,8 +72,8 @@ class Validator():
 
 
 class NER_Validator(Validator, NER_Embedder):
-    def __init__(self, dataset_path, model, tokenizer):
-        NER_Embedder.__init__(self, dataset_path, model, tokenizer)
+    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+        NER_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
         Validator.__init__(self, self.hidden_size)
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()

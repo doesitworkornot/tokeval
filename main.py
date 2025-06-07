@@ -13,14 +13,22 @@ def evaluate(model, tokenizer):
     re = RE_Validator("./data/Relation_extraction/sem_eval_2010_task_8/", model, tokenizer)
     re_f1, re_acc = re.get_results()
 
+    chunk = NER_Validator("./data/POS_tagging/conll2000", model, tokenizer)
+    chunk_f1, chunk_acc = chunk.get_results()
+
     print('\n\nNER')
     print(f"\nBest F1 Score: {ner_f1:.4f}")
     print(f"Best Accuracy: {ner_acc:.4f}")
-
     
     print('\n\nRelation Extraction')
     print(f"\nBest F1 Score: {re_f1:.4f}")
     print(f"Best Accuracy: {re_acc:.4f}")
+
+    print('\n\nChunking')
+    print(f"\nBest F1 Score: {chunk_f1:.4f}")
+    print(f"Best Accuracy: {chunk_acc:.4f}")
+
+
 
 
 if __name__ == "__main__":

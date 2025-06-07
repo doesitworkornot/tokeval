@@ -52,8 +52,8 @@ class Embedder:
 
 
 class NER_Embedder(Embedder):
-    def __init__(self, dataset_path, model, tokenizer):
-        super().__init__(dataset_path, model, tokenizer, cutoff=1000)
+    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+        super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
         self.vectorized_train = self.flatten_dataset(self.vectorize(self.train_set))
         self.vectorized_val = self.flatten_dataset(self.vectorize(self.val_set))
 
