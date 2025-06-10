@@ -1,16 +1,16 @@
 import json
-import os
 from pathlib import Path
-from datasets import Dataset, load_from_disk, concatenate_datasets
-import tempfile
-import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from datasets import Dataset, load_dataset
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import (
-    DataCollatorForTokenClassification,
+from transformers import DataCollatorForTokenClassification
 
-)
+
 
 
 class Embedder:
@@ -25,6 +25,7 @@ class Embedder:
         self.label2id = self.read_tags(self.dataset_path / 'labels.json')
         self.id2label = {v: k for k, v in self.label2id.items()}
         self.num_classes = len(self.label2id)
+        
 
         self.train_set = self.load_dataset(self.dataset_path / 'train' / 'train.jsonl')
         self.val_set = self.load_dataset(self.dataset_path / 'val' / 'val.jsonl')
@@ -54,36 +55,21 @@ class Embedder:
 class NER_Embedder(Embedder):
     def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
         super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
-        self.vectorized_train = self.flatten_dataset(self.vectorize(self.train_set))
-        self.vectorized_val = self.flatten_dataset(self.vectorize(self.val_set))
-
-    def process_example(self, example):
-            flattened = []
-            for emb, tag in zip(example["embeddings"], example["labels"]):
-                flattened.append({
-                    "embedding": np.array(emb),
-                    "labels": tag
-                })
-            return flattened
-    
-    def flatten_dataset(self, original_dataset):
-        new_data = []
-        for example in tqdm(original_dataset, desc="Flattening"):
-            new_data.extend(self.process_example(example))
-        return Dataset.from_list(new_data)
-
+        self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
+        self.vectorized_train = self.vectorize(self.train_set, "vectorized_train.parquet")
+        
 
     def tokenize_and_align_labels(self, examples):
-        tokenized_inputs = self.tokenizer(examples['tokens'], truncation=True, is_split_into_words=True)
+        tokenized_inputs = self.tokenizer(examples['tokens'], truncation=True, is_split_into_words=True, padding=True)
         labels = []
         for i, label in enumerate(examples['ner_tags']):
-            word_ids = tokenized_inputs.word_ids(batch_index=i)  # Map tokens to their respective word.
+            word_ids = tokenized_inputs.word_ids(batch_index=i)
             previous_word_idx = None
             label_ids = []
-            for word_idx in word_ids:  # Set the special tokens to -100.
+            for word_idx in word_ids:
                 if word_idx is None:
                     label_ids.append(-100)
-                elif word_idx != previous_word_idx:  # Only label the first token of a given word.
+                elif word_idx != previous_word_idx:
                     label_ids.append(label[word_idx])
                 else:
                     label_ids.append(-100)
@@ -93,8 +79,8 @@ class NER_Embedder(Embedder):
         tokenized_inputs['labels'] = labels
         return tokenized_inputs
 
-
-    def vectorize(self, dataset):
+    
+    def vectorize(self, dataset, save_path):
         tokenized_dataset = dataset.map(
             self.tokenize_and_align_labels,
             batched=True,
@@ -115,10 +101,8 @@ class NER_Embedder(Embedder):
         self.model.to(device)
         self.model.eval()
 
-        temp_dir = tempfile.mkdtemp(prefix="vectorized_chunks_")
-        chunk_size = 1000
-        chunk_index = 0
-        buffer = []
+        writer = None  # Arrow writer
+        ds_len = 0
 
         with torch.no_grad():
             for batch in tqdm(dataloader, desc="Vectorizing"):
@@ -128,38 +112,31 @@ class NER_Embedder(Embedder):
 
                 outputs = self.model(**batch)
                 hidden_states = outputs.last_hidden_state.cpu().numpy()
+                ds_len += sum(input_lengths)
 
+                rows = []
                 for i in range(hidden_states.shape[0]):
                     seq_len = input_lengths[i]
-                    embedding = hidden_states[i, :seq_len]
-                    label_seq = labels[i, :seq_len]
+                    for j in range(seq_len):
+                        rows.append({
+                            "embedding": hidden_states[i, j].tolist(),
+                            "labels": int(labels[i, j])
+                        })
 
-                    buffer.append({
-                        "embeddings": embedding.tolist(),
-                        "labels": label_seq.tolist()
-                    })
+                df = pd.DataFrame(rows)
+                table = pa.Table.from_pandas(df)
+                if writer is None:
+                    writer = pq.ParquetWriter(save_path, table.schema)
+                writer.write_table(table)
 
-                    if len(buffer) >= chunk_size:
-                        chunk_dataset = Dataset.from_list(buffer)
-                        chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index}")
-                        chunk_dataset.save_to_disk(chunk_path)
-                        buffer = []
-                        chunk_index += 1
+        if writer:
+            writer.close()
 
-            if buffer:
-                chunk_dataset = Dataset.from_list(buffer)
-                chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index}")
-                chunk_dataset.save_to_disk(chunk_path)
-                chunk_index += 1
+        self.hidden_size = hidden_states.shape[2]
+        self.ds_len = ds_len
 
-        all_chunks = []
-        for i in range(chunk_index):
-            chunk_path = os.path.join(temp_dir, f"chunk_{i}")
-            all_chunks.append(load_from_disk(chunk_path))
-
-        self.hidden_size = embedding.shape[1]
-        full_dataset = concatenate_datasets(all_chunks)
-        return full_dataset
+        ds = load_dataset("parquet", data_files=save_path, split='train', streaming=True)
+        return ds.with_format("torch")
 
 
 

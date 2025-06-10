@@ -1,5 +1,5 @@
-import os
-import shutil
+import math
+import pathlib
 
 import torch
 from sklearn.metrics import f1_score, accuracy_score
@@ -14,9 +14,10 @@ from source.classifier import Classifier
 
 
 class Validator():
-    def __init__(self, hs):
+    def __init__(self, hs, ds_len):
         self.classifier = Classifier(hs, self.num_classes)
         self.best_f1, self.best_acc = 0.0, 0.0  
+        self.ds_len = ds_len
 
 
     def get_results(self):
@@ -41,16 +42,29 @@ class Validator():
     
 
     def train(self):
+        bs = 32
+        num_train_epochs = 5
+        train_len = self.ds_len
+
+        steps_per_epoch = math.ceil(train_len / bs)
+        max_steps = steps_per_epoch * num_train_epochs
+
+ 
+        eval_steps = steps_per_epoch
+
+        print(f"Max steps: {max_steps}, Batch size: {bs}, Dataset length: {train_len}")
+
         training_args = TrainingArguments(
-            num_train_epochs=5,
-            per_device_train_batch_size=32,
-            per_device_eval_batch_size=64,
-            eval_strategy='epoch',  # Валидация после каждой эпохи
-            logging_strategy='epoch',     # Логирование после каждой эпохи
+            per_device_train_batch_size=bs,
+            per_device_eval_batch_size=bs,
+            weight_decay = 1e-4,
+            eval_strategy='steps',
+            eval_steps=eval_steps,
             remove_unused_columns=False,
             output_dir='./tmp',
             save_steps=0,
-            load_best_model_at_end=False  # Не загружать лучшую модель
+            load_best_model_at_end=False,
+            max_steps=max_steps,  # use calculated value
         )
 
         trainer = Trainer(
@@ -64,24 +78,26 @@ class Validator():
 
         trainer.train()
 
-        if os.path.exists('./tmp'):
-            shutil.rmtree('./tmp')
-        if os.path.exists('./trainer_output'):
-            shutil.rmtree('./trainer_output')
+        train_ds = pathlib.Path('./vectorized_train.parquet')
+        val_ds = pathlib.Path('./vectorized_val.parquet')
+        if train_ds.is_file():
+            pathlib.Path.unlink(train_ds)
+        if val_ds.is_file():
+            pathlib.Path.unlink(val_ds)
 
 
 
 class NER_Validator(Validator, NER_Embedder):
     def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
         NER_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
-        Validator.__init__(self, self.hidden_size)
+        Validator.__init__(self, self.hidden_size, self.ds_len)
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
 
 
     def collate_fn(self, batch):
         return {
-            'embeddings': torch.stack([torch.tensor(f['embedding']) for f in batch]),
+            'embeddings': torch.stack([(f['embedding']).clone().detach() for f in batch]),
             'labels': torch.tensor([f['labels'] for f in batch])
         }
 
