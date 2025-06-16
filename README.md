@@ -14,11 +14,6 @@ This tool helps evaluate the performance of token embedders across a wide range 
 - **Relation Extraction**  
   Analyze how effectively your embedder captures relationships between entities.
 
-- **Hallucination Span Detection**  
-  Detect generated spans that are not grounded in the source input.
-
-- **Coreference Resolution**  
-  Find and evaluate chains of coreferent mentions in text.
 
 ## 🧠 Use Case
 
