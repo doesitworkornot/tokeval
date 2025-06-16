@@ -8,7 +8,7 @@ from source.validator import NER_Validator
 from source.validator import RE_Validator
 
 def evaluate(model, tokenizer):
-    ner = NER_Validator("./data/NER/multinerd/", model, tokenizer, cutoff=None)
+    ner = NER_Validator("./data/NER/multinerd/", model, tokenizer, cutoff=4000)
     ner_f1, ner_acc = ner.get_results()
     del ner
     gc.collect()
@@ -18,7 +18,7 @@ def evaluate(model, tokenizer):
     del re
     gc.collect()
 
-    chunk = NER_Validator("./data/POS_tagging/conll2000", model, tokenizer, cutoff=None)
+    chunk = NER_Validator("./data/POS_tagging/conll2000", model, tokenizer, cutoff=3000)
     chunk_f1, chunk_acc = chunk.get_results()
     del chunk
     gc.collect()
@@ -41,6 +41,6 @@ def evaluate(model, tokenizer):
 
 if __name__ == "__main__":
     model_name = "bert-base-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, add_prefix_space=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True)
     model = AutoModel.from_pretrained(model_name)
     evaluate(model, tokenizer)

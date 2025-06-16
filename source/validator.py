@@ -6,6 +6,10 @@ import torch.nn as nn
 from sklearn.metrics import f1_score, accuracy_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from seqeval.metrics import classification_report
+from seqeval.metrics import f1_score
+from seqeval.metrics import accuracy_score
+import numpy as np
 
 from source.embeddings import NER_Embedder, RE_Embedder
 from source.classifier import Classifier
@@ -13,8 +17,9 @@ from source.classifier import Classifier
 
 
 class Validator():
-    def __init__(self, hs, ds_len):
-        self.classifier = Classifier(hs, self.num_classes)
+    def __init__(self, hs, ds_len, id2label, nc):
+        self.id2label = id2label
+        self.classifier = Classifier(hs, nc)
         self.best_f1, self.best_acc = 0.0, 0.0  
         self.ds_len = ds_len
 
@@ -23,19 +28,25 @@ class Validator():
         return self.best_f1, self.best_acc      
 
 
-    def compute_metrics(self, preds, labels):
-  
-            current_f1 = f1_score(labels, preds, average='weighted')
-            current_acc = accuracy_score(labels, preds)
-  
-            if current_f1 > self.best_f1:
-                self.best_f1 = current_f1
-                self.best_acc = current_acc
+    def compute_metrics(self, predictions, labels):
+        true_predictions = [
+            [self.id2label[p] for (p, l) in zip(predictions, labels) if l != -100]
+        ]
+        true_labels = [
+            [self.id2label[l] for (p, l) in zip(predictions, labels) if l != -100]
+        ]
 
-            return {
-                'f1': current_f1,
-                'accuracy': current_acc
-            }
+        results = classification_report(true_labels, true_predictions)
+        f1 = f1_score(true_labels, true_predictions)
+        acc = accuracy_score(true_labels, true_predictions)
+        print(results)
+        if f1 > self.best_f1:
+                self.best_f1 = f1
+                self.best_acc = acc
+        return {
+            'f1': f1,
+            'accuracy': acc,
+        }
     
 
     def train(self):
@@ -106,7 +117,7 @@ class Validator():
 class NER_Validator(Validator, NER_Embedder):
     def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
         NER_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
-        Validator.__init__(self, self.hidden_size, self.ds_len)
+        Validator.__init__(self, self.hidden_size, self.ds_len, id2label=self.id2label, nc=self.num_classes)
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
 
@@ -122,7 +133,7 @@ class NER_Validator(Validator, NER_Embedder):
 class RE_Validator(Validator, RE_Embedder):
     def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
         RE_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
-        Validator.__init__(self, self.hidden_size * 2, self.ds_len)
+        Validator.__init__(self, self.hidden_size * 2, self.ds_len, id2label=self.id2label, nc=self.num_classes)
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
      

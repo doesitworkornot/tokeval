@@ -63,6 +63,7 @@ class NER_Embedder(Embedder):
         tokenized_inputs = self.tokenizer(examples['tokens'], truncation=True, is_split_into_words=True, padding=True)
         labels = []
         for i, label in enumerate(examples['ner_tags']):
+            
             word_ids = tokenized_inputs.word_ids(batch_index=i)
             previous_word_idx = None
             label_ids = []
