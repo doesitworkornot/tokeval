@@ -141,10 +141,10 @@ class NER_Embedder(Embedder):
 
 
 class RE_Embedder(Embedder):
-    def __init__(self, dataset_path, model, tokenizer):
-        super().__init__(dataset_path, model, tokenizer)
-        self.vectorized_train = self.vectorize(self.train_set)
-        self.vectorized_val = self.vectorize(self.val_set)
+    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+        super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
+        self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
+        self.vectorized_train = self.vectorize(self.train_set, "vectorized_train.parquet")
         
 
     def preprocess_sentence(self, sentence):
@@ -173,11 +173,12 @@ class RE_Embedder(Embedder):
         }
 
 
-    def vectorize(self, dataset):
+    def vectorize(self, dataset, save_path):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(device)
 
-        processed_data = []
+        writer = None  # Arrow writer
+        ds_len = 0
         for item in tqdm(dataset, desc="Vectorizing"):
             sentence = item["sentence"]
             relation = item["relation"]
@@ -208,12 +209,24 @@ class RE_Embedder(Embedder):
 
             e1_emb = last_hidden[e1_token_idx].tolist()
             e2_emb = last_hidden[e2_token_idx].tolist()
+            rows = []
 
-            processed_data.append({
+            rows.append({
                 "e1_embedding": e1_emb,
                 "e2_embedding": e2_emb,
                 "label": relation
             })
+            ds_len += 1
+            df = pd.DataFrame(rows)
+            table = pa.Table.from_pandas(df)
+            if writer is None:
+                writer = pq.ParquetWriter(save_path, table.schema)
+            writer.write_table(table)
+
+        if writer:
+            writer.close()
+        
         self.hidden_size = len(e1_emb)
-        dataset = Dataset.from_list(processed_data)
-        return dataset
+        self.ds_len = ds_len
+        ds = load_dataset("parquet", data_files=save_path, split='train', streaming=True)
+        return ds.with_format("torch")

@@ -1,0 +1,5 @@
+data
+__pycache__
+tmp
+vectorized_train.parquet
+vectorized_val.parquet

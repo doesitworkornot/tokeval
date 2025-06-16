@@ -2,11 +2,10 @@ import math
 import pathlib
 
 import torch
+import torch.nn as nn
 from sklearn.metrics import f1_score, accuracy_score
-from transformers import (
-    Trainer,
-    TrainingArguments,
-)
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from source.embeddings import NER_Embedder, RE_Embedder
 from source.classifier import Classifier
@@ -24,9 +23,7 @@ class Validator():
         return self.best_f1, self.best_acc      
 
 
-    def compute_metrics(self, pred):
-            labels = pred.label_ids
-            preds = pred.predictions.argmax(-1)
+    def compute_metrics(self, preds, labels):
   
             current_f1 = f1_score(labels, preds, average='weighted')
             current_acc = accuracy_score(labels, preds)
@@ -42,41 +39,60 @@ class Validator():
     
 
     def train(self):
-        bs = 32
+        bs = 128
         num_train_epochs = 5
         train_len = self.ds_len
-
         steps_per_epoch = math.ceil(train_len / bs)
         max_steps = steps_per_epoch * num_train_epochs
 
- 
-        eval_steps = steps_per_epoch
-
         print(f"Max steps: {max_steps}, Batch size: {bs}, Dataset length: {train_len}")
 
-        training_args = TrainingArguments(
-            per_device_train_batch_size=bs,
-            per_device_eval_batch_size=bs,
-            weight_decay = 1e-4,
-            eval_strategy='steps',
-            eval_steps=eval_steps,
-            remove_unused_columns=False,
-            output_dir='./tmp',
-            save_steps=0,
-            load_best_model_at_end=False,
-            max_steps=max_steps,  # use calculated value
-        )
+        train_loader = DataLoader(self.vectorized_train, batch_size=bs, collate_fn=self.collate_fn)
+        val_loader = DataLoader(self.vectorized_val, batch_size=bs*2, collate_fn=self.collate_fn)
 
-        trainer = Trainer(
-            model=self.classifier,
-            args=training_args,
-            train_dataset=self.vectorized_train,
-            eval_dataset=self.vectorized_val,
-            data_collator=self.collate_fn,
-            compute_metrics=self.compute_metrics  # Добавляем вычисление метрик
-        )
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.AdamW(self.classifier.parameters(), lr=5e-5, weight_decay=1e-4)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.classifier.to(device)
 
-        trainer.train()
+        step = 0
+        for epoch in range(num_train_epochs):
+            self.classifier.train()
+            train_loss = 0.0
+
+            for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_train_epochs}"):
+                step += 1
+                inputs = {k: v.to(device) for k, v in batch.items() if k != "labels"}
+                labels = batch["labels"].to(device)
+                outputs = self.classifier(**inputs)
+                loss = criterion(outputs['logits'], labels)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item()
+
+                # Optional: evaluation every epoch or step
+                if step % steps_per_epoch == 0:
+                    self.classifier.eval()
+                    all_preds, all_labels = [], []
+
+                    with torch.no_grad():
+                        for val_batch in val_loader:
+                            inputs = {k: v.to(device) for k, v in val_batch.items() if k != "labels"}
+                            labels = val_batch["labels"]
+                            outputs = self.classifier(**inputs)
+                            logits = outputs['logits']
+                            preds = torch.argmax(logits, dim=-1)
+                            all_preds.extend(preds.cpu().numpy())
+                            all_labels.extend(labels.cpu().numpy())
+
+                    metrics = self.compute_metrics(all_preds, all_labels)
+                    print(f"[Step {step}] Eval metrics: {metrics}")
+
+            avg_train_loss = train_loss / steps_per_epoch
+            print(f"Epoch {epoch+1} completed. Avg train loss: {avg_train_loss:.4f}")
 
         train_ds = pathlib.Path('./vectorized_train.parquet')
         val_ds = pathlib.Path('./vectorized_val.parquet')
@@ -104,19 +120,19 @@ class NER_Validator(Validator, NER_Embedder):
 
 
 class RE_Validator(Validator, RE_Embedder):
-    def __init__(self, dataset_path, model, tokenizer):
-        RE_Embedder.__init__(self, dataset_path, model, tokenizer)
-        Validator.__init__(self, self.hidden_size * 2)
+    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+        RE_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
+        Validator.__init__(self, self.hidden_size * 2, self.ds_len)
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
      
 
     def collate_fn(self, batch):
-        e1_embeddings = torch.stack([torch.tensor(f['e1_embedding']) for f in batch])
-        e2_embeddings = torch.stack([torch.tensor(f['e2_embedding']) for f in batch])
+        e1_embeddings = torch.stack([f['e1_embedding'] for f in batch])
+        e2_embeddings = torch.stack([f['e2_embedding'] for f in batch])
         combined_embeddings = torch.cat([e1_embeddings, e2_embeddings], dim=-1)
 
-        labels = torch.tensor([f['label'] for f in batch], dtype=torch.long)
+        labels = torch.tensor([f['label'] for f in batch])
 
         return {
             'embeddings': combined_embeddings,  # объединённые эмбеддинги
