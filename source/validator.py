@@ -84,7 +84,6 @@ class Validator():
 
                 train_loss += loss.item()
 
-                # Optional: evaluation every epoch or step
                 if step % steps_per_epoch == 0:
                     self.classifier.eval()
                     all_preds, all_labels = [], []
@@ -146,7 +145,7 @@ class RE_Validator(Validator, RE_Embedder):
         labels = torch.tensor([f['label'] for f in batch])
 
         return {
-            'embeddings': combined_embeddings,  # объединённые эмбеддинги
+            'embeddings': combined_embeddings,
             'labels': labels
         }
 

@@ -1,4 +1,3 @@
-
 import torch.nn as nn
 
 
@@ -14,14 +13,12 @@ class Classifier(nn.Module):
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self, embeddings, labels=None):
-        # Прямое распространение
         x = self.batch_norm1(embeddings)
         x = self.linear1(x)
         x = self.batch_norm2(x)
         x = self.silu(x)
         logits = self.classifier(x)
         
-        # Вычисление потерь
         loss = None
         if labels is not None:
             loss = self.loss_fn(logits, labels)

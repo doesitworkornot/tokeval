@@ -102,7 +102,7 @@ class NER_Embedder(Embedder):
         self.model.to(device)
         self.model.eval()
 
-        writer = None  # Arrow writer
+        writer = None
         ds_len = 0
 
         with torch.no_grad():
