@@ -3,3 +3,6 @@ __pycache__
 tmp
 vectorized_train.parquet
 vectorized_val.parquet
+errors
+logs
+launch.sh
