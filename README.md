@@ -1,17 +1,17 @@
 # 🔍 Universal Token Embedding Validator - TokEval
 
-**Universal Validator for Token Embedders**  
+**Universal Validator for Token Embedders**
 This tool helps evaluate the performance of token embedders across a wide range of NLP tasks.
 
 ## ✨ Features
 
-- **Named Entity Recognition (NER)**  
+- **Named Entity Recognition (NER)**
   Evaluate how well your embedder distinguishes and classifies named entities.
 
-- **Part-of-Speech Tagging (POS-tagging)**  
+- **Part-of-Speech Tagging (POS-tagging)**
   Assess the syntactic understanding of your token embeddings.
 
-- **Relation Extraction**  
+- **Relation Extraction**
   Analyze how effectively your embedder captures relationships between entities.
 
 

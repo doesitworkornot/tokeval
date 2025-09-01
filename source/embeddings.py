@@ -1,20 +1,29 @@
 import json
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from datasets import Dataset, load_dataset
 import torch
+from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import DataCollatorForTokenClassification
-
-
+from transformers import (
+    DataCollatorForTokenClassification,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
 
 
 class Embedder:
-    def __init__(self, dataset_path, model, tokenizer, cutoff=None):
+    def __init__(
+        self,
+        dataset_path: str,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        cutoff: Optional[int] = None,
+    ) -> None:
         self.dataset_path = Path(dataset_path)
         self.model = model.eval()
         self.tokenizer = tokenizer
@@ -22,48 +31,53 @@ class Embedder:
         self.best_f1 = 0.0
         self.best_acc = 0.0
         self.cutoff = cutoff
-        self.label2id = self.read_tags(self.dataset_path / 'labels.json')
+        self.label2id = self.read_tags(self.dataset_path / "labels.json")
         self.id2label = {v: k for k, v in self.label2id.items()}
         self.num_classes = len(self.label2id)
-        
 
-        self.train_set = self.load_dataset(self.dataset_path / 'train' / 'train.jsonl')
-        self.val_set = self.load_dataset(self.dataset_path / 'val' / 'val.jsonl')
+        self.train_set = self.load_dataset(self.dataset_path / "train" / "train.jsonl")
+        self.val_set = self.load_dataset(self.dataset_path / "val" / "val.jsonl")
 
-
-    def load_dataset(self, dataset_path):
+    def load_dataset(self, dataset_path: str) -> Dataset:
         data = []
-        with open(dataset_path, 'r', encoding='utf-8') as f:
+        with open(dataset_path, "r", encoding="utf-8") as f:
             for line in f:
                 item = json.loads(line)
                 data.append(item)
         if self.cutoff is not None:
-            return Dataset.from_list(data[:self.cutoff])
+            return Dataset.from_list(data[: self.cutoff])
         return Dataset.from_list(data)
-    
 
-    def get_embeddings(self):
+    def get_embeddings(self) -> Tuple[Dataset, Dataset]:
         return self.vectorized_train, self.vectorized_val
 
-
-    def read_tags(self, file_path):
+    def read_tags(self, file_path: str) -> Dict[str, int]:
         with open(file_path, "r", encoding="utf-8") as file:
             return json.loads(file.read().strip())
 
 
-
 class NER_Embedder(Embedder):
-    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+    def __init__(
+        self,
+        dataset_path: str,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        cutoff: Optional[int] = 1000,
+    ) -> None:
         super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
         self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
-        self.vectorized_train = self.vectorize(self.train_set, "vectorized_train.parquet")
-        
+        self.vectorized_train = self.vectorize(
+            self.train_set, "vectorized_train.parquet"
+        )
 
-    def tokenize_and_align_labels(self, examples):
-        tokenized_inputs = self.tokenizer(examples['tokens'], truncation=True, is_split_into_words=True, padding=True)
+    def tokenize_and_align_labels(
+        self, examples: Dict[str, List[Any]]
+    ) -> Dict[str, List[List[int]]]:
+        tokenized_inputs = self.tokenizer(
+            examples["tokens"], truncation=True, is_split_into_words=True, padding=True
+        )
         labels = []
-        for i, label in enumerate(examples['ner_tags']):
-            
+        for i, label in enumerate(examples["ner_tags"]):
             word_ids = tokenized_inputs.word_ids(batch_index=i)
             previous_word_idx = None
             label_ids = []
@@ -77,26 +91,20 @@ class NER_Embedder(Embedder):
                 previous_word_idx = word_idx
             labels.append(label_ids)
 
-        tokenized_inputs['labels'] = labels
+        tokenized_inputs["labels"] = labels
         return tokenized_inputs
 
-    
-    def vectorize(self, dataset, save_path):
+    def vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
         tokenized_dataset = dataset.map(
             self.tokenize_and_align_labels,
             batched=True,
-            remove_columns=dataset.column_names
+            remove_columns=dataset.column_names,
         )
         collator = DataCollatorForTokenClassification(
-            tokenizer=self.tokenizer,
-            return_tensors="pt",
-            padding=True
+            tokenizer=self.tokenizer, return_tensors="pt", padding=True
         )
         dataloader = DataLoader(
-            tokenized_dataset,
-            batch_size=8,
-            collate_fn=collator,
-            shuffle=False
+            tokenized_dataset, batch_size=8, collate_fn=collator, shuffle=False
         )
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(device)
@@ -119,10 +127,12 @@ class NER_Embedder(Embedder):
                 for i in range(hidden_states.shape[0]):
                     seq_len = input_lengths[i]
                     for j in range(seq_len):
-                        rows.append({
-                            "embedding": hidden_states[i, j].tolist(),
-                            "labels": int(labels[i, j])
-                        })
+                        rows.append(
+                            {
+                                "embedding": hidden_states[i, j].tolist(),
+                                "labels": int(labels[i, j]),
+                            }
+                        )
 
                 df = pd.DataFrame(rows)
                 table = pa.Table.from_pandas(df)
@@ -136,19 +146,27 @@ class NER_Embedder(Embedder):
         self.hidden_size = hidden_states.shape[2]
         self.ds_len = ds_len
 
-        ds = load_dataset("parquet", data_files=save_path, split='train', streaming=True)
+        ds = load_dataset(
+            "parquet", data_files=save_path, split="train", streaming=True
+        )
         return ds.with_format("torch")
 
 
-
 class RE_Embedder(Embedder):
-    def __init__(self, dataset_path, model, tokenizer, cutoff=1000):
+    def __init__(
+        self,
+        dataset_path: str,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        cutoff: int = 1000,
+    ) -> None:
         super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
         self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
-        self.vectorized_train = self.vectorize(self.train_set, "vectorized_train.parquet")
-        
+        self.vectorized_train = self.vectorize(
+            self.train_set, "vectorized_train.parquet"
+        )
 
-    def preprocess_sentence(self, sentence):
+    def preprocess_sentence(self, sentence: str) -> Dict[str, str]:
         e1_start_tag = sentence.index("<e1>")
         e1_end_tag = sentence.index("</e1>")
         e2_start_tag = sentence.index("<e2>")
@@ -157,12 +175,11 @@ class RE_Embedder(Embedder):
         e1_text = sentence[e1_start_tag + 4 : e1_end_tag]
         e2_text = sentence[e2_start_tag + 4 : e2_end_tag]
 
-   
         clean_sentence = (
             sentence.replace("<e1>", "")
-                    .replace("</e1>", "")
-                    .replace("<e2>", "")
-                    .replace("</e2>", "")
+            .replace("</e1>", "")
+            .replace("<e2>", "")
+            .replace("</e2>", "")
         )
 
         e1_clean_start = clean_sentence.index(e1_text)
@@ -170,11 +187,10 @@ class RE_Embedder(Embedder):
 
         return clean_sentence, {
             "e1": (e1_clean_start, e1_clean_start + len(e1_text)),
-            "e2": (e2_clean_start, e2_clean_start + len(e2_text))
+            "e2": (e2_clean_start, e2_clean_start + len(e2_text)),
         }
 
-
-    def vectorize(self, dataset, save_path):
+    def vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(device)
 
@@ -186,7 +202,12 @@ class RE_Embedder(Embedder):
 
             clean_sentence, entity_positions = self.preprocess_sentence(sentence)
 
-            encoding = self.tokenizer(clean_sentence, return_offsets_mapping=True, return_tensors="pt", truncation=True)
+            encoding = self.tokenizer(
+                clean_sentence,
+                return_offsets_mapping=True,
+                return_tensors="pt",
+                truncation=True,
+            )
             offsets = encoding["offset_mapping"][0].tolist()
             input_ids = encoding["input_ids"].to(device)
             attention_mask = encoding["attention_mask"].to(device)
@@ -195,7 +216,7 @@ class RE_Embedder(Embedder):
                 outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 last_hidden = outputs.last_hidden_state.squeeze(0).cpu().numpy()
 
-            def find_token_index(char_pos):
+            def find_token_index(char_pos: int) -> Union[int, None]:
                 """Находит индекс токена, начинающегося в позиции char_pos"""
                 for i, (start, end) in enumerate(offsets):
                     if start == char_pos:
@@ -212,11 +233,9 @@ class RE_Embedder(Embedder):
             e2_emb = last_hidden[e2_token_idx].tolist()
             rows = []
 
-            rows.append({
-                "e1_embedding": e1_emb,
-                "e2_embedding": e2_emb,
-                "label": relation
-            })
+            rows.append(
+                {"e1_embedding": e1_emb, "e2_embedding": e2_emb, "label": relation}
+            )
             ds_len += 1
             df = pd.DataFrame(rows)
             table = pa.Table.from_pandas(df)
@@ -226,8 +245,10 @@ class RE_Embedder(Embedder):
 
         if writer:
             writer.close()
-        
+
         self.hidden_size = len(e1_emb)
         self.ds_len = ds_len
-        ds = load_dataset("parquet", data_files=save_path, split='train', streaming=True)
+        ds = load_dataset(
+            "parquet", data_files=save_path, split="train", streaming=True
+        )
         return ds.with_format("torch")
