@@ -1,0 +1,3 @@
+[tool.ruff]
+select = ["E", "F", "ANN"]
+ignore = ["ANN101", "ANN102", "ANN401", "E501"]
