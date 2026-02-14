@@ -1,27 +1,39 @@
+"""Main script for evaluating NER, RE, and Chunking classifiers.
+
+Uses pre-computed embeddings and a specified model and tokenizer.
+"""
+
 import gc
 
 from transformers import AutoModel, AutoTokenizer
 
-from source.validator import NER_Validator, RE_Validator
+from source.validator import NERValidator, REValidator
 
 
 def evaluate(model: AutoModel, tokenizer: AutoTokenizer) -> None:
-    ner = NER_Validator("./data/NER/multinerd/", model, tokenizer, cutoff=None)
+    """Evaluate NER, RE, and Chunking classifiers using the provided model and tokenizer, and print the results.
+
+    Args:
+        model (AutoModel): Pre-trained model for generating embeddings.
+        tokenizer (AutoTokenizer): Tokenizer corresponding to the pre-trained model.
+
+    """
+    ner = NERValidator("./data/NER/multinerd/", model, tokenizer, cutoff=10000)
     ner_f1, ner_acc = ner.get_results()
     del ner
     gc.collect()
 
-    re = RE_Validator(
+    re = REValidator(
         "./data/Relation_extraction/sem_eval_2010_task_8/",
         model,
         tokenizer,
-        cutoff=None,
+        cutoff=10000,
     )
     re_f1, re_acc = re.get_results()
     del re
     gc.collect()
 
-    chunk = NER_Validator("./data/POS_tagging/conll2000", model, tokenizer, cutoff=None)
+    chunk = NERValidator("./data/POS_tagging/conll2000", model, tokenizer, cutoff=10000)
     chunk_f1, chunk_acc = chunk.get_results()
     del chunk
     gc.collect()

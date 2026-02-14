@@ -1,44 +1,68 @@
+"""Validator module for training and evaluating NER and RE classifiers using pre-computed embeddings."""
+
 import math
 import pathlib
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import torch
-import torch.nn as nn
 from seqeval.metrics import accuracy_score, classification_report, f1_score
+from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from source.classifier import Classifier
-from source.embeddings import NER_Embedder, RE_Embedder
+from source.embeddings import NEREmbedder, REEmbedder
 
 
 class Validator:
-    def __init__(self, hs: int, ds_len: int, id2label: Dict[int, str], nc: int) -> None:
+    """Validator class for training and evaluating classifiers on NER and RE tasks."""
+
+    def __init__(self, hs: int, ds_len: int, id2label: dict[int, str], nc: int) -> None:
+        """Initialize the Validator with hidden size, dataset length, label mapping, and number of classes.
+
+        Args:
+            hs (int): Hidden size of the embeddings.
+            ds_len (int): Length of the dataset.
+            id2label (dict[int, str]): Mapping from label IDs to label names.
+            nc (int): Number of classes for classification.
+
+        """
         self.id2label = id2label
         self.classifier = Classifier(hs, nc)
         self.best_f1, self.best_acc = 0.0, 0.0
         self.ds_len = ds_len
 
-    def get_results(self) -> Tuple[float, float]:
+    def get_results(self) -> tuple[float, float]:
+        """Return the best F1 score and accuracy achieved during validation.
+
+        Returns:
+            tuple[float, float]: Best F1 score and accuracy.
+
+        """
         return self.best_f1, self.best_acc
 
     def compute_metrics(
-        self, predictions: List[int], labels: List[int]
-    ) -> Dict[str, float]:
+        self,
+        predictions: list[int],
+        labels: list[int],
+    ) -> dict[str, float]:
+        """Compute F1 score and accuracy based on predictions and true labels.
+
+        Args:
+            predictions (list[int]): List of predicted label IDs.
+            labels (list[int]): List of true label IDs.
+
+        Returns:
+            dict[str, float]: Dictionary containing F1 score and accuracy.
+
+        """
+        ignore_label_id = -100
         true_predictions = [
-            [
-                self.id2label[pred]
-                for (pred, lab) in zip(predictions, labels)
-                if lab != -100
-            ]
+            [self.id2label[pred] for (pred, lab) in zip(predictions, labels, strict=False) if lab != ignore_label_id],
         ]
         true_labels = [
-            [
-                self.id2label[lab]
-                for (pred, lab) in zip(predictions, labels)
-                if lab != -100
-            ]
+            [self.id2label[lab] for (pred, lab) in zip(predictions, labels, strict=False) if lab != ignore_label_id],
         ]
 
         results = classification_report(true_labels, true_predictions)
@@ -54,6 +78,7 @@ class Validator:
         }
 
     def train(self) -> None:
+        """Train the classifier using the vectorized training and validation datasets."""
         bs = 128
         num_train_epochs = 5
         train_len = self.ds_len
@@ -63,15 +88,21 @@ class Validator:
         print(f"Max steps: {max_steps}, Batch size: {bs}, Dataset length: {train_len}")
 
         train_loader = DataLoader(
-            self.vectorized_train, batch_size=bs, collate_fn=self.collate_fn
+            self.vectorized_train,
+            batch_size=bs,
+            collate_fn=self.collate_fn,
         )
         val_loader = DataLoader(
-            self.vectorized_val, batch_size=bs * 2, collate_fn=self.collate_fn
+            self.vectorized_val,
+            batch_size=bs * 2,
+            collate_fn=self.collate_fn,
         )
 
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.AdamW(
-            self.classifier.parameters(), lr=5e-5, weight_decay=1e-4
+            self.classifier.parameters(),
+            lr=5e-5,
+            weight_decay=1e-4,
         )
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.classifier.to(device)
@@ -82,7 +113,8 @@ class Validator:
             train_loss = 0.0
 
             for batch in tqdm(
-                train_loader, desc=f"Epoch {epoch + 1}/{num_train_epochs}"
+                train_loader,
+                desc=f"Epoch {epoch + 1}/{num_train_epochs}",
             ):
                 step += 1
                 inputs = {k: v.to(device) for k, v in batch.items() if k != "labels"}
@@ -102,11 +134,7 @@ class Validator:
 
                     with torch.no_grad():
                         for val_batch in val_loader:
-                            inputs = {
-                                k: v.to(device)
-                                for k, v in val_batch.items()
-                                if k != "labels"
-                            }
+                            inputs = {k: v.to(device) for k, v in val_batch.items() if k != "labels"}
                             labels = val_batch["labels"]
                             outputs = self.classifier(**inputs)
                             logits = outputs["logits"]
@@ -128,7 +156,9 @@ class Validator:
             pathlib.Path.unlink(val_ds)
 
 
-class NER_Validator(Validator, NER_Embedder):
+class NERValidator(Validator, NEREmbedder):
+    """NER_Validator class for training and evaluating a NER classifier using pre-computed embeddings."""
+
     def __init__(
         self,
         dataset_path: str,
@@ -136,7 +166,16 @@ class NER_Validator(Validator, NER_Embedder):
         tokenizer: PreTrainedTokenizer,
         cutoff: int = 1000,
     ) -> None:
-        NER_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
+        """Initialize the NER_Validator with dataset path, model, tokenizer, and cutoff for embedding generation.
+
+        Args:
+            dataset_path (str): Path to the dataset.
+            model (PreTrainedModel): Pre-trained model for generating embeddings.
+            tokenizer (PreTrainedTokenizer): Tokenizer corresponding to the pre-trained model.
+            cutoff (int, optional): Maximum number of samples to use for embedding generation. Defaults to 1000.
+
+        """
+        NEREmbedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
         Validator.__init__(
             self,
             self.hidden_size,
@@ -147,16 +186,28 @@ class NER_Validator(Validator, NER_Embedder):
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
 
-    def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+    def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        """Collate function to prepare batches of embeddings and labels for training and evaluation.
+
+        Args:
+            batch (list[dict[str, Any]]): List of samples, where each sample is a dictionary
+                containing "embedding" and "labels".
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary containing stacked embeddings and corresponding labels as tensors.
+
+        """
         return {
             "embeddings": torch.stack(
-                [(f["embedding"]).clone().detach() for f in batch]
+                [(f["embedding"]).clone().detach() for f in batch],
             ),
             "labels": torch.tensor([f["labels"] for f in batch]),
         }
 
 
-class RE_Validator(Validator, RE_Embedder):
+class REValidator(Validator, REEmbedder):
+    """RE_Validator class for training and evaluating a RE classifier using pre-computed embeddings."""
+
     def __init__(
         self,
         dataset_path: str,
@@ -164,7 +215,16 @@ class RE_Validator(Validator, RE_Embedder):
         tokenizer: PreTrainedTokenizer,
         cutoff: int = 1000,
     ) -> None:
-        RE_Embedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
+        """Initialize the RE_Validator with dataset path, model, tokenizer, and cutoff for embedding generation.
+
+        Args:
+            dataset_path (str): Path to the dataset.
+            model (PreTrainedModel): Pre-trained model for generating embeddings.
+            tokenizer (PreTrainedTokenizer): Tokenizer corresponding to the pre-trained model.
+            cutoff (int, optional): Maximum number of samples to use for embedding generation. Defaults to 1000.
+
+        """
+        REEmbedder.__init__(self, dataset_path, model, tokenizer, cutoff=cutoff)
         Validator.__init__(
             self,
             self.hidden_size * 2,
@@ -175,7 +235,18 @@ class RE_Validator(Validator, RE_Embedder):
         self.vectorized_train, self.vectorized_val = self.get_embeddings()
         self.train()
 
-    def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+    def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        """Collate function to prepare batches of entity pair embeddings and labels for training and evaluation.
+
+        Args:
+            batch (list[dict[str, Any]]): List of samples, where each sample is a dictionary
+                containing "e1_embedding", "e2_embedding", and "label".
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary containing concatenated entity pair embeddings
+            and corresponding labels as tensors.
+
+        """
         e1_embeddings = torch.stack([f["e1_embedding"] for f in batch])
         e2_embeddings = torch.stack([f["e2_embedding"] for f in batch])
         combined_embeddings = torch.cat([e1_embeddings, e2_embeddings], dim=-1)
