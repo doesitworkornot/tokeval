@@ -1,11 +1,19 @@
+"""Tools for converting data formats for token classification tasks."""
+
 import json
 import sys
-from typing import Dict
 
 import pandas as pd
 
 
 def parquet_to_jsonl(parquet_path: str, jsonl_path: str) -> None:
+    """Convert a parquet file to jsonl format.
+
+    Args:
+        parquet_path: Path to the input parquet file.
+        jsonl_path: Path to the output jsonl file.
+
+    """
     df = pd.read_parquet(parquet_path)
     with open(jsonl_path, "w", encoding="utf-8") as fout:
         for record in df.to_dict(orient="records"):
@@ -13,26 +21,36 @@ def parquet_to_jsonl(parquet_path: str, jsonl_path: str) -> None:
 
 
 def txt_to_jsonl(
-    input_path: str, output_jsonl_path: str, label_map_path: Dict[str, int]
+    input_path: str,
+    output_jsonl_path: str,
+    label_map_path: dict[str, int],
 ) -> None:
+    """Convert a txt file with tokens and tags to jsonl format, and save the label2id mapping.
+
+    Args:
+        input_path: Path to the input txt file.
+        output_jsonl_path: Path to the output jsonl file.
+        label_map_path: Path to save the label2id mapping as a json file.
+
+    """
     label_set = set()
     data = []
 
-    with open(input_path, "r", encoding="utf-8") as infile:
+    with open(input_path, encoding="utf-8") as infile:
         tokens = []
         tags = []
 
         for line in infile:
-            line = line.strip()
-            if not line:
+            clean_line = line.strip()
+            if not clean_line:
                 if tokens:
                     data.append((tokens, tags))
                     tokens = []
                     tags = []
                 continue
 
-            parts = line.split()
-            if len(parts) >= 2:
+            parts = clean_line.split()
+            if len(parts) > 1:
                 token = parts[0]
                 tag = parts[-1]
                 tokens.append(token)
@@ -96,16 +114,23 @@ label2id = {
 
 
 def val_txt_to_jsonl(input_path: str, output_path: str) -> None:
+    """Convert a validation txt file with tokens and tags to jsonl format using a predefined label2id mapping.
+
+    Args:
+        input_path: Path to the input validation txt file.
+        output_path: Path to the output jsonl file.
+
+    """
     with (
-        open(input_path, "r", encoding="utf-8") as infile,
+        open(input_path, encoding="utf-8") as infile,
         open(output_path, "w", encoding="utf-8") as outfile,
     ):
         tokens = []
         tags = []
 
         for line in infile:
-            line = line.strip()
-            if not line:
+            clean_line = line.strip()
+            if not clean_line:
                 if tokens:  # конец блока
                     json_line = json.dumps(
                         {"tokens": tokens, "ner_tags": [label2id[tag] for tag in tags]},
@@ -116,8 +141,8 @@ def val_txt_to_jsonl(input_path: str, output_path: str) -> None:
                     tags = []
                 continue
 
-            parts = line.split()
-            if len(parts) >= 2:
+            parts = clean_line.split()
+            if len(parts) > 1:
                 token = parts[0]
                 tag = parts[-1]
                 tokens.append(token)
