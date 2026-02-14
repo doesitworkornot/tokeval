@@ -6,4 +6,4 @@ errors
 logs
 launch.sh
 data_unprocessed
-data
+data/datasets

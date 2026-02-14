@@ -6,13 +6,12 @@ from typing import Any
 
 import torch
 from seqeval.metrics import accuracy_score, classification_report, f1_score
+from source.classifier import Classifier
+from source.embeddings import NEREmbedder, REEmbedder
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedModel, PreTrainedTokenizer
-
-from source.classifier import Classifier
-from source.embeddings import NEREmbedder, REEmbedder
 
 
 class Validator:
