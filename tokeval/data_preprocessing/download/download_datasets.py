@@ -4,15 +4,12 @@ import json
 import logging
 from pathlib import Path
 
-from tokeval.data_preprocessing.download.download_huggingface import download_files
+from tokeval.data_preprocessing.download.download_huggingface import download_files as download_files_hf
+from tokeval.data_preprocessing.download.download_link import download_files as download_files_link
 from tokeval.shared.log import get_logger, setup_logging
 from tokeval.shared.paths import DATASET_FILE, DATASET_FOLDER
 
-setup_logging(level="INFO")
-
 logger = get_logger(__name__)
-
-logger.info("Application started")
 
 
 def download_dataset(dataset: dict) -> None:
@@ -24,21 +21,23 @@ def download_dataset(dataset: dict) -> None:
 
     """
     logging.info(f"Processing dataset: {dataset['dataset']} of type {dataset['type']}...")
-    if dataset["type"] == "NER":
-        hf_name = dataset.get("hugginface")
-        logging.info(f"Loading dataset from Hugging Face: {hf_name}...")
-        dataset_path = DATASET_FOLDER / dataset["type"] / dataset["dataset"]
-        data_files = dataset.get("files")
-        download_files(repo_id=hf_name, files=data_files, local_dir=dataset_path)
+    dataset_path = DATASET_FOLDER / dataset["type"] / dataset["dataset"]
 
-    elif dataset["type"] == "POS":
-        # Implement loading logic for POS datasets
-        pass
-    elif dataset["type"] == "RE":
-        # Implement loading logic for RE datasets
-        pass
+    hf_name = dataset.get("hugginface")
+    if hf_name:
+        data_files = dataset.get("files")
+        branch = dataset.get("branch")
+        download_files_hf(repo_id=hf_name, files=data_files, local_dir=dataset_path, branch=branch)
+        return
+
+    gh_link = dataset.get("github")
+    if gh_link:
+        data_files = dataset.get("files")
+        download_files_link(url_link=gh_link, files=data_files, local_dir=dataset_path)
+        return
+
     else:
-        raise ValueError(f"Unsupported dataset type: {dataset['type']}")
+        raise ValueError(f"Unsupported dataset type: {dataset['dataset']}. No valid download method found.")
 
 
 def datasets_from_jsonl(datasets_path: Path) -> None:
@@ -57,6 +56,6 @@ def datasets_from_jsonl(datasets_path: Path) -> None:
 
 
 if __name__ == "__main__":
+    setup_logging(level="INFO")
     logger.info(f"Starting dataset loading process with {DATASET_FILE}...")
-    print("hello")
     datasets_from_jsonl(DATASET_FILE)
