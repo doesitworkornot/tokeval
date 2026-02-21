@@ -5,6 +5,10 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 
+from tokeval.shared.log import get_logger
+
+logger = get_logger(__name__)
+
 
 def download_files(repo_id: str, files: dict, local_dir: Path, branch: str | None) -> None:
     """Download files and rename them using dict keys as folder and filename.
@@ -49,7 +53,7 @@ def download_files(repo_id: str, files: dict, local_dir: Path, branch: str | Non
 
         shutil.copy2(downloaded_path, target_file)
 
-        print(f"Downloaded {remote_path} → {target_file}")
+        logger.info(f"Downloaded {remote_path} → {target_file}")
 
     cache_path = local_dir / ".cache"
     if cache_path.exists():

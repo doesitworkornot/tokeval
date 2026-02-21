@@ -9,21 +9,16 @@ from torch import nn
 class Classifier(nn.Module):
     """A simple classifier for token classification tasks."""
 
-    def __init__(self, input_dim: int, num_classes: int, hidden_dim: int = 32) -> None:
+    def __init__(self, input_dim: int, num_classes: int) -> None:
         """Initialize the classifier.
 
         Args:
             input_dim: The dimension of the input embeddings.
             num_classes: The number of classes for classification.
-            hidden_dim: The dimension of the hidden layer (default: 32).
 
         """
         super().__init__()
-        self.batch_norm1 = nn.BatchNorm1d(input_dim)
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.batch_norm2 = nn.BatchNorm1d(hidden_dim)
-        self.silu = nn.SiLU()
-        self.classifier = nn.Linear(hidden_dim, num_classes)
+        self.classifier = nn.Linear(input_dim, num_classes)
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(
@@ -41,11 +36,7 @@ class Classifier(nn.Module):
             A dictionary containing the loss (if labels are provided) and the logits.
 
         """
-        x = self.batch_norm1(embeddings)
-        x = self.linear1(x)
-        x = self.batch_norm2(x)
-        x = self.silu(x)
-        logits = self.classifier(x)
+        logits = self.classifier(embeddings)
 
         loss = None
         if labels is not None:
