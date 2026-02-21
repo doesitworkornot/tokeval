@@ -1,3 +1,3 @@
-{"type": "NER", "dataset": "multinerd", "link": ""}
-{"type": "POS", "dataset": "conll2000", "link": ""}
-{"type": "RE", "dataset": "semeval2010_task8", "link": ""}
+{"type": "NER", "dataset": "multinerd", "hugginface": "Babelscape/multinerd", "files": {"train": "train/train_en.jsonl", "val": "val/val_en.jsonl"}}
+{"type": "POS", "dataset": "conll2000", "github": "https://raw.githubusercontent.com/teropa/nlp/master/resources/corpora/conll2000", "files": {"train": "train.txt", "val": "test.txt"}}
+{"type": "RE", "dataset": "semeval2010_task8", "hugginface": "joelniklaus/sem_eval_2010_task_8", "files": {"train": "default/train/0000.parquet", "val": "default/test/0000.parquet"}, "branch": "refs/convert/parquet"}
