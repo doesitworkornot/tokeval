@@ -1,25 +1,26 @@
-"""Embedding module for token classification tasks."""
+"""Module contains the Embedder classes for embedding datasets.
+
+Specifically for Named Entity Recognition (NER) and Relation Extraction (RE) tasks.
+The NEREmbedder class processes datasets for NER tasks,
+while the REEmbedder class processes datasets for RE tasks.
+Both classes utilize a pre-trained model and tokenizer to generate
+embeddings for the respective tasks, and provide methods to retrieve
+"""
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from datasets import Dataset, load_dataset
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import (
-    DataCollatorForTokenClassification,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import PreTrainedModel, PreTrainedTokenizer
 
 
 class Embedder:
-    """Base class for embedding token classification datasets."""
+    """Base Embedder class for embedding datasets for token classification tasks."""
 
     def __init__(
         self,
@@ -28,352 +29,307 @@ class Embedder:
         tokenizer: PreTrainedTokenizer,
         cutoff: int | None = None,
     ) -> None:
-        """Initialize the embedder.
+        """Initialize the Embedder class for embedding datasets for token classification tasks.
 
         Args:
-            dataset_path: Path to the dataset directory containing train, val, and labels.json.
-            model: A pre-trained transformer model to use for generating embeddings.
-            tokenizer: The corresponding tokenizer for the pre-trained model.
-            cutoff: Optional maximum number of samples to process from the dataset (default: None, meaning no cutoff).
+            dataset_path: The path to the dataset to be embedded.
+            model: The pre-trained model to be used for embedding.
+            tokenizer: The tokenizer corresponding to the pre-trained model.
+            cutoff: An optional integer to limit the number of samples processed from the dataset.
 
         """
         self.dataset_path = Path(dataset_path)
+
         self.model = model.eval()
         self.tokenizer = tokenizer
-        self.hidden_size = 768
-        self.best_f1 = 0.0
-        self.best_acc = 0.0
         self.cutoff = cutoff
-        self.label2id = self.read_tags(self.dataset_path / "labels.json")
+
+        self.label2id = self._load_json("labels.json")
         self.id2label = {v: k for k, v in self.label2id.items()}
         self.num_classes = len(self.label2id)
 
-        self.train_set = self.load_dataset(self.dataset_path / "train" / "train.jsonl")
-        self.val_set = self.load_dataset(self.dataset_path / "val" / "val.jsonl")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
-    def load_dataset(self, dataset_path: str) -> Dataset:
-        """Load a dataset from a jsonl file and return it as a Hugging Face Dataset.
+        self.train_set = self._load_jsonl("train/train.jsonl")
+        self.val_set = self._load_jsonl("val/val.jsonl")
 
-        Args:
-            dataset_path: Path to the input jsonl file.
+    def _load_json(self, name: str) -> dict:
+        with open(self.dataset_path / name, encoding="utf-8") as f:
+            return json.load(f)
 
-        Returns:
-            A Hugging Face Dataset containing the loaded data.
+    def _load_jsonl(self, rel_path: str) -> Dataset:
+        path = self.dataset_path / rel_path
 
-        """
         data = []
-        with open(dataset_path, encoding="utf-8") as f:
-            for line in f:
-                item = json.loads(line)
-                data.append(item)
-        if self.cutoff is not None:
-            return Dataset.from_list(data[: self.cutoff])
+        with open(path, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if self.cutoff and i >= self.cutoff:
+                    break
+                data.append(json.loads(line))
+
         return Dataset.from_list(data)
 
-    def get_embeddings(self) -> tuple[Dataset, Dataset]:
-        """Get the vectorized training and validation datasets.
+    def _save_parquet(
+        self,
+        generator: Iterator[dict],
+        save_path: str,
+        schema: pa.Schema,
+    ) -> int:
+        writer = pq.ParquetWriter(save_path, schema)
+        count = 0
 
-        Returns:
-            A tuple containing the vectorized training and validation datasets.
+        try:
+            batch = []
+            batch_size = 4096
 
-        """
-        return self.vectorized_train, self.vectorized_val
+            for row in generator:
+                batch.append(row)
+                count += 1
 
-    def read_tags(self, file_path: str) -> dict[str, int]:
-        """Read the label2id mapping from a json file.
+                if len(batch) >= batch_size:
+                    table = pa.Table.from_pylist(batch, schema=schema)
+                    writer.write_table(table)
+                    batch.clear()
 
-        Args:
-            file_path: Path to the input json file containing the label2id mapping.
+            if batch:
+                table = pa.Table.from_pylist(batch, schema=schema)
+                writer.write_table(table)
 
-        Returns:
-            A dictionary mapping label names to their corresponding integer IDs.
+        finally:
+            writer.close()
 
-        """
-        with open(file_path, encoding="utf-8") as file:
-            return json.loads(file.read().strip())
+        return count
+
+    def _load_parquet(self, path: str) -> Dataset:
+        return load_dataset(
+            "parquet",
+            data_files=path,
+            split="train",
+            streaming=True,
+        ).with_format("torch")
 
 
 class NEREmbedder(Embedder):
-    """Embedder for Named Entity Recognition (NER) tasks."""
+    """Embedder class for Named Entity Recognition (NER) tasks."""
 
     def __init__(
         self,
         dataset_path: str,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
-        cutoff: int | None = 1000,
+        cutoff: int | None = None,
     ) -> None:
-        """Initialize the NER embedder.
+        """Initialize the NEREmbedder class for embedding datasets for NER tasks.
 
         Args:
-            dataset_path: Path to the dataset directory containing train, val, and labels.json.
-            model: A pre-trained transformer model to use for generating embeddings.
-            tokenizer: The corresponding tokenizer for the pre-trained model.
-            cutoff: Optional maximum number of samples to process from the dataset (default: 1000).
+            dataset_path: The path to the dataset to be embedded.
+            model: The pre-trained model to be used for embedding.
+            tokenizer: The tokenizer corresponding to the pre-trained model.
+            cutoff: An optional integer to limit the number of samples processed from the dataset.
 
         """
-        super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
-        self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
-        self.vectorized_train = self.vectorize(
-            self.train_set,
-            "vectorized_train.parquet",
-        )
+        super().__init__(dataset_path, model, tokenizer, cutoff)
 
-    def tokenize_and_align_labels(
-        self,
-        examples: dict[str, list[Any]],
-    ) -> dict[str, list[list[int]]]:
-        """Tokenize the input tokens and align the labels with the tokenized output.
+        self.vectorized_train = self._vectorize(self.train_set, "vectorized_train.parquet")
+        self.vectorized_val = self._vectorize(self.val_set, "vectorized_val.parquet")
 
-        Args:
-            examples: A dictionary containing the input tokens and their corresponding NER tags.
+    def get_embeddings(self) -> tuple[Dataset, Dataset]:
+        """Return embedded datasets."""
+        return self.vectorized_train, self.vectorized_val
 
-        Returns:
-            A dictionary containing the tokenized inputs and the aligned labels.
-
-        """
-        tokenized_inputs = self.tokenizer(
-            examples["tokens"],
+    def _tokenize(self, batch: dict) -> dict[str, torch.Tensor]:
+        tokenized = self.tokenizer(
+            batch["tokens"],
             truncation=True,
+            padding=True,
             is_split_into_words=True,
-            padding=True,
-        )
-        labels = []
-        for i, label in enumerate(examples["ner_tags"]):
-            word_ids = tokenized_inputs.word_ids(batch_index=i)
-            previous_word_idx = None
-            label_ids = []
-            for word_idx in word_ids:
-                if word_idx is None:
-                    label_ids.append(-100)
-                elif word_idx != previous_word_idx:
-                    label_ids.append(label[word_idx])
-                else:
-                    label_ids.append(-100)
-                previous_word_idx = word_idx
-            labels.append(label_ids)
-
-        tokenized_inputs["labels"] = labels
-        return tokenized_inputs
-
-    def vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
-        """Vectorize the input dataset by generating embeddings.
-
-        Use the pre-trained model and saving them in a parquet file.
-
-        Args:
-            dataset: A Hugging Face Dataset containing the input data to be vectorized.
-            save_path: Path to save the output parquet file containing the vectorized data.
-
-        Returns:
-            A Hugging Face Dataset containing the vectorized data loaded from the parquet file.
-
-        """
-        tokenized_dataset = dataset.map(
-            self.tokenize_and_align_labels,
-            batched=True,
-            remove_columns=dataset.column_names,
-        )
-        collator = DataCollatorForTokenClassification(
-            tokenizer=self.tokenizer,
             return_tensors="pt",
-            padding=True,
         )
-        dataloader = DataLoader(
-            tokenized_dataset,
-            batch_size=8,
-            collate_fn=collator,
-            shuffle=False,
+
+        labels = []
+        for i, word_labels in enumerate(batch["ner_tags"]):
+            word_ids = tokenized.word_ids(i)
+            aligned = []
+            prev = None
+            for wid in word_ids:
+                if wid is None:
+                    aligned.append(-100)
+                elif wid != prev:
+                    aligned.append(word_labels[wid])
+                else:
+                    aligned.append(-100)
+                prev = wid
+            labels.append(aligned)
+        tokenized["labels"] = labels
+        return tokenized
+
+    def _vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
+        schema = pa.schema(
+            [
+                ("embedding", pa.list_(pa.float32())),
+                ("labels", pa.int64()),
+            ],
         )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(device)
-        self.model.eval()
 
-        writer = None
-        ds_len = 0
+        def generator() -> Iterator[dict]:
+            batch_size = 128
+            hidden_size = None
 
-        with torch.no_grad():
-            for group in tqdm(dataloader, desc="Vectorizing"):
-                labels = group.pop("labels").cpu().numpy()
-                input_lengths = group["attention_mask"].sum(dim=1).tolist()
-                batch = {k: v.to(device) for k, v in group.items()}
+            for start in tqdm(range(0, len(dataset), batch_size), desc="NER embedding"):
+                batch = dataset[start : start + batch_size]
+                tokens = batch["tokens"]
+                ner_tags = batch["ner_tags"]
 
-                outputs = self.model(**batch)
-                hidden_states = outputs.last_hidden_state.cpu().numpy()
-                ds_len += sum(input_lengths)
+                tok = self.tokenizer(
+                    tokens,
+                    truncation=True,
+                    padding=True,
+                    is_split_into_words=True,
+                    return_tensors="pt",
+                )
+                aligned_labels = []
+                for i, word_labels in enumerate(ner_tags):
+                    word_ids = tok.word_ids(batch_index=i)
+                    prev = None
+                    aligned = []
 
-                rows = []
-                for i in range(hidden_states.shape[0]):
-                    seq_len = input_lengths[i]
-                    for j in range(seq_len):
-                        rows.append(
-                            {
-                                "embedding": hidden_states[i, j].tolist(),
-                                "labels": int(labels[i, j]),
-                            },
-                        )
+                    for wid in word_ids:
+                        if wid is None:
+                            aligned.append(-100)
+                        elif wid != prev:
+                            aligned.append(word_labels[wid])
+                        else:
+                            aligned.append(-100)
 
-                df = pd.DataFrame(rows)
-                table = pa.Table.from_pandas(df)
-                if writer is None:
-                    writer = pq.ParquetWriter(save_path, table.schema)
-                writer.write_table(table)
+                        prev = wid
 
-        if writer:
-            writer.close()
+                    aligned_labels.append(aligned)
+                input_ids = tok["input_ids"].to(self.device)
+                attention_mask = tok["attention_mask"].to(self.device)
 
-        self.hidden_size = hidden_states.shape[2]
-        self.ds_len = ds_len
+                with torch.no_grad():
+                    hidden = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                    ).last_hidden_state.cpu()
 
-        ds = load_dataset(
-            "parquet",
-            data_files=save_path,
-            split="train",
-            streaming=True,
-        )
-        return ds.with_format("torch")
+                if hidden_size is None:
+                    hidden_size = hidden.shape[-1]
+                    self.hidden_size = hidden_size
+                ignore_label = -100
+                for i in range(hidden.shape[0]):
+                    for j in range(hidden.shape[1]):
+                        label = aligned_labels[i][j]
+
+                        if label == ignore_label:
+                            continue
+
+                        yield {
+                            "embedding": hidden[i, j].tolist(),
+                            "labels": int(label),
+                        }
+
+        count = self._save_parquet(generator(), save_path, schema)
+
+        self.ds_len = count
+
+        return self._load_parquet(save_path)
 
 
 class REEmbedder(Embedder):
-    """Embedder for Relation Extraction (RE) tasks."""
+    """Embedder class for Relation Extraction (RE) tasks."""
 
     def __init__(
         self,
         dataset_path: str,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
-        cutoff: int = 1000,
+        cutoff: int | None = None,
     ) -> None:
-        """Initialize the RE embedder.
+        """Initialize the REEmbedder class for embedding datasets for RE tasks.
 
         Args:
-            dataset_path: Path to the dataset directory containing train, val, and labels.json.
-            model: A pre-trained transformer model to use for generating embeddings.
-            tokenizer: The corresponding tokenizer for the pre-trained model.
-            cutoff: Optional maximum number of samples to process from the dataset (default: 1000).
+            dataset_path: The path to the dataset to be embedded.
+            model: The pre-trained model to be used for embedding.
+            tokenizer: The tokenizer corresponding to the pre-trained model.
+            cutoff: An optional integer to limit the number of samples processed from the dataset.
 
         """
-        super().__init__(dataset_path, model, tokenizer, cutoff=cutoff)
-        self.vectorized_val = self.vectorize(self.val_set, "vectorized_val.parquet")
-        self.vectorized_train = self.vectorize(
-            self.train_set,
-            "vectorized_train.parquet",
+        super().__init__(dataset_path, model, tokenizer, cutoff)
+
+        self.vectorized_train = self._vectorize(self.train_set, "vectorized_train.parquet")
+        self.vectorized_val = self._vectorize(self.val_set, "vectorized_val.parquet")
+
+    def get_embeddings(self) -> tuple[Dataset, Dataset]:
+        """Return embedded datasets."""
+        return self.vectorized_train, self.vectorized_val
+
+    def _extract(self, sentence: str) -> tuple[str, str, str]:
+        e1s = sentence.index("<e1>")
+        e1e = sentence.index("</e1>")
+
+        e2s = sentence.index("<e2>")
+        e2e = sentence.index("</e2>")
+
+        e1 = sentence[e1s + 4 : e1e]
+        e2 = sentence[e2s + 4 : e2e]
+
+        clean = sentence.replace("<e1>", "").replace("</e1>", "").replace("<e2>", "").replace("</e2>", "")
+
+        return clean, e1, e2
+
+    def _vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
+        schema = pa.schema(
+            [
+                ("e1_embedding", pa.list_(pa.float32())),
+                ("e2_embedding", pa.list_(pa.float32())),
+                ("label", pa.int64()),
+            ],
         )
 
-    def preprocess_sentence(self, sentence: str) -> dict[str, str]:
-        """Preprocess the input sentence by extracting the entity mentions and their positions.
+        def generator() -> Iterator[dict]:
+            for item in tqdm(dataset, desc="RE embedding"):
+                clean, e1, e2 = self._extract(item["sentence"])
 
-        Args:
-            sentence: The input sentence containing entity
-                mentions marked with <e1>, </e1>, <e2>, and </e2> tags.
+                enc = self.tokenizer(
+                    clean,
+                    return_offsets_mapping=True,
+                    return_tensors="pt",
+                    truncation=True,
+                )
 
-        Returns:
-            A tuple containing the cleaned sentence (with entity tags removed)
-            and a dictionary mapping entity names to their character positions in the cleaned sentence.
+                offsets = enc["offset_mapping"][0].tolist()
 
-        """
-        e1_start_tag = sentence.index("<e1>")
-        e1_end_tag = sentence.index("</e1>")
-        e2_start_tag = sentence.index("<e2>")
-        e2_end_tag = sentence.index("</e2>")
+                enc = {k: v.to(self.device) for k, v in enc.items() if k != "offset_mapping"}
 
-        e1_text = sentence[e1_start_tag + 4 : e1_end_tag]
-        e2_text = sentence[e2_start_tag + 4 : e2_end_tag]
+                with torch.no_grad():
+                    hidden = self.model(**enc).last_hidden_state[0].cpu()
 
-        clean_sentence = sentence.replace("<e1>", "").replace("</e1>", "").replace("<e2>", "").replace("</e2>", "")
+                def __find(entity: str, clean: str, offsets: list[tuple[int, int]]) -> int | None:
+                    pos = clean.index(entity)
 
-        e1_clean_start = clean_sentence.index(e1_text)
-        e2_clean_start = clean_sentence.index(e2_text)
+                    for i, (start, end) in enumerate(offsets):
+                        if start <= pos < end:
+                            return i
 
-        return clean_sentence, {
-            "e1": (e1_clean_start, e1_clean_start + len(e1_text)),
-            "e2": (e2_clean_start, e2_clean_start + len(e2_text)),
-        }
+                    return None
 
-    def vectorize(self, dataset: Dataset, save_path: str) -> Dataset:
-        """Vectorize the input dataset by generating embeddings.
+                i1 = __find(e1, clean, offsets)
+                i2 = __find(e2, clean, offsets)
 
-        Vectorize inputs using the pre-trained model
-        and saving them in a parquet file.
+                if i1 is None or i2 is None:
+                    continue
 
-        Args:
-            dataset: A Hugging Face Dataset containing the input data to be vectorized.
-            save_path: Path to save the output parquet file containing the vectorized data.
+                yield {
+                    "e1_embedding": hidden[i1].tolist(),
+                    "e2_embedding": hidden[i2].tolist(),
+                    "label": item["relation"],
+                }
 
-        Returns:
-            A Hugging Face Dataset containing the vectorized data loaded from the parquet file.
+        count = self._save_parquet(generator(), save_path, schema)
 
-        """
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(device)
+        self.ds_len = count
+        self.hidden_size = len(next(generator())["e1_embedding"])
 
-        writer = None  # Arrow writer
-        ds_len = 0
-        for item in tqdm(dataset, desc="Vectorizing"):
-            sentence = item["sentence"]
-            relation = item["relation"]
-
-            clean_sentence, entity_positions = self.preprocess_sentence(sentence)
-
-            encoding = self.tokenizer(
-                clean_sentence,
-                return_offsets_mapping=True,
-                return_tensors="pt",
-                truncation=True,
-            )
-            offsets = encoding["offset_mapping"][0].tolist()
-            input_ids = encoding["input_ids"].to(device)
-            attention_mask = encoding["attention_mask"].to(device)
-
-            with torch.no_grad():
-                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                last_hidden = outputs.last_hidden_state.squeeze(0).cpu().numpy()
-
-            def find_token_index(char_pos: int, offsets: list) -> int | None:
-                """Find the token index corresponding to a given character position in the original sentence.
-
-                Args:
-                    char_pos: The character position in the original sentence.
-                    offsets: A list of (start, end) character offsets for each token in the tokenized input.
-
-                Returns:
-                    The index of the token corresponding to the character position, or None if not found.
-
-                """
-                for i, (start, _) in enumerate(offsets):
-                    if start == char_pos:
-                        return i
-                return None
-
-            e1_token_idx = find_token_index(entity_positions["e1"][0], offsets)
-            e2_token_idx = find_token_index(entity_positions["e2"][0], offsets)
-
-            if e1_token_idx is None or e2_token_idx is None:
-                continue  # Пропускаем, если не удалось найти
-
-            e1_emb = last_hidden[e1_token_idx].tolist()
-            e2_emb = last_hidden[e2_token_idx].tolist()
-            rows = []
-
-            rows.append(
-                {"e1_embedding": e1_emb, "e2_embedding": e2_emb, "label": relation},
-            )
-            ds_len += 1
-            df = pd.DataFrame(rows)
-            table = pa.Table.from_pandas(df)
-            if writer is None:
-                writer = pq.ParquetWriter(save_path, table.schema)
-            writer.write_table(table)
-
-        if writer:
-            writer.close()
-
-        self.hidden_size = len(e1_emb)
-        self.ds_len = ds_len
-        ds = load_dataset(
-            "parquet",
-            data_files=save_path,
-            split="train",
-            streaming=True,
-        )
-        return ds.with_format("torch")
+        return self._load_parquet(save_path)

@@ -7,7 +7,8 @@ import gc
 
 from transformers import AutoModel, AutoTokenizer
 
-from source.validator import NERValidator, REValidator
+from tokeval.embedding_evaluation.embeddings import NEREmbedder, REEmbedder
+from tokeval.embedding_evaluation.validator import NERValidator, REValidator
 
 
 def evaluate(model: AutoModel, tokenizer: AutoTokenizer) -> None:
@@ -18,22 +19,23 @@ def evaluate(model: AutoModel, tokenizer: AutoTokenizer) -> None:
         tokenizer (AutoTokenizer): Tokenizer corresponding to the pre-trained model.
 
     """
-    ner = NERValidator("./data/NER/multinerd/", model, tokenizer, cutoff=10000)
+    ner_embedder = NEREmbedder("./data/datasets/NER/multinerd/", model, tokenizer, cutoff=10000)
+    ner = NERValidator(ner_embedder)
+    ner.train()
     ner_f1, ner_acc = ner.get_results()
-    del ner
+    del ner, ner_embedder
     gc.collect()
 
-    re = REValidator(
-        "./data/Relation_extraction/sem_eval_2010_task_8/",
-        model,
-        tokenizer,
-        cutoff=10000,
-    )
+    re_embedder = REEmbedder("./data/datasets/RE/semeval2010_task8/", model, tokenizer, cutoff=10000)
+    re = REValidator(re_embedder)
+    re.train()
     re_f1, re_acc = re.get_results()
     del re
     gc.collect()
 
-    chunk = NERValidator("./data/POS_tagging/conll2000", model, tokenizer, cutoff=10000)
+    chunk_embedder = NEREmbedder("./data/datasets/POS/conll2000/", model, tokenizer, cutoff=10000)
+    chunk = NERValidator(chunk_embedder)
+    chunk.train()
     chunk_f1, chunk_acc = chunk.get_results()
     del chunk
     gc.collect()

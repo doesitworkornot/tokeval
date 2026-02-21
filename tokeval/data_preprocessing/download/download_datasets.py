@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 from tokeval.data_preprocessing.download.download_huggingface import download_files as download_files_hf
-from tokeval.data_preprocessing.download.download_link import download_files as download_files_link
 from tokeval.shared.log import get_logger, setup_logging
 from tokeval.shared.paths import DATASET_FILE, DATASET_FOLDER
 
@@ -29,13 +28,6 @@ def download_dataset(dataset: dict) -> None:
         branch = dataset.get("branch")
         download_files_hf(repo_id=hf_name, files=data_files, local_dir=dataset_path, branch=branch)
         return
-
-    gh_link = dataset.get("github")
-    if gh_link:
-        data_files = dataset.get("files")
-        download_files_link(url_link=gh_link, files=data_files, local_dir=dataset_path)
-        return
-
     else:
         raise ValueError(f"Unsupported dataset type: {dataset['dataset']}. No valid download method found.")
 
