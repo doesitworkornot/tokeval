@@ -14,7 +14,6 @@ This tool helps evaluate the performance of token embedders across a wide range 
 - **Relation Extraction**
   Analyze how effectively your embedder captures relationships between entities.
 
-
 ## 🧠 Use Case
 
 Whether you're training a new language model or experimenting with different embedding strategies, this validator offers a unified framework to benchmark and understand the behavior of your token embeddings.
