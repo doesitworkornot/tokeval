@@ -199,7 +199,6 @@ class NERValidator(Validator):
         super().__init__(
             hidden_size=embedder.hidden_size,
             id2label=embedder.id2label,
-            num_classes=embedder.num_classes,
             train_ds=train_ds,
             val_ds=val_ds,
             collate_fn=self.collate_fn,
@@ -242,7 +241,6 @@ class REValidator(Validator):
         super().__init__(
             hidden_size=embedder.hidden_size * 2,
             id2label=embedder.id2label,
-            num_classes=embedder.num_classes,
             train_ds=train_ds,
             val_ds=val_ds,
             collate_fn=self.collate_fn,

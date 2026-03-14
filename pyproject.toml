@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets>=4.5.0",
+    "huggingface-hub[cli]>=1.4.1",
     "pre-commit>=4.5.1",
     "seqeval>=1.2.2",
     "torch>=2.10.0",

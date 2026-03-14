@@ -173,7 +173,7 @@ class NEREmbedder(Embedder):
         )
 
         def generator() -> Iterator[dict]:
-            batch_size = 128
+            batch_size = 16
             hidden_size = None
 
             for start in tqdm(range(0, len(dataset), batch_size), desc="NER embedding"):

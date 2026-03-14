@@ -1,60 +1,77 @@
-"""Main script for evaluating NER, RE, and Chunking classifiers.
-
-Uses pre-computed embeddings and a specified model and tokenizer.
-"""
+"""Main script for evaluating token classification models on NER, Relation Extraction, and Chunking tasks."""
 
 import gc
 
+import pandas as pd
 from transformers import AutoModel, AutoTokenizer
 
 from tokeval.embedding_evaluation.embeddings import NEREmbedder, REEmbedder
 from tokeval.embedding_evaluation.validator import NERValidator, REValidator
 
+TASKS = {
+    "NER": {
+        "dataset_path": "./data/datasets/NER/multinerd/",
+        "embedder_class": NEREmbedder,
+        "validator_class": NERValidator,
+    },
+    "Relation Extraction": {
+        "dataset_path": "./data/datasets/RE/semeval2010_task8/",
+        "embedder_class": REEmbedder,
+        "validator_class": REValidator,
+    },
+    "Chunking": {
+        "dataset_path": "./data/datasets/POS/conll2000/",
+        "embedder_class": NEREmbedder,
+        "validator_class": NERValidator,
+    },
+}
 
-def evaluate(model: AutoModel, tokenizer: AutoTokenizer) -> None:
-    """Evaluate NER, RE, and Chunking classifiers using the provided model and tokenizer, and print the results.
 
-    Args:
-        model (AutoModel): Pre-trained model for generating embeddings.
-        tokenizer (AutoTokenizer): Tokenizer corresponding to the pre-trained model.
+def evaluate_model(model_name: str, cutoff: int = 10000) -> dict:
+    """Evaluate all tasks for a given model and return results as a dictionary."""
+    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True, trust_remote_code=True)
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
 
-    """
-    ner_embedder = NEREmbedder("./data/datasets/NER/multinerd/", model, tokenizer, cutoff=10000)
-    ner = NERValidator(ner_embedder)
-    ner.train()
-    ner_f1, ner_acc = ner.get_results()
-    del ner, ner_embedder
+    results = {"model": model_name}
+
+    for task_name, task_info in TASKS.items():
+        embedder = task_info["embedder_class"](task_info["dataset_path"], model, tokenizer, cutoff=cutoff)
+        validator = task_info["validator_class"](embedder)
+        validator.train()
+        f1, acc = validator.get_results()
+        results[f"{task_name} F1"] = f1
+        results[f"{task_name} Accuracy"] = acc
+
+        del embedder, validator
+        gc.collect()
+
+    del model, tokenizer
     gc.collect()
-
-    re_embedder = REEmbedder("./data/datasets/RE/semeval2010_task8/", model, tokenizer, cutoff=10000)
-    re = REValidator(re_embedder)
-    re.train()
-    re_f1, re_acc = re.get_results()
-    del re
-    gc.collect()
-
-    chunk_embedder = NEREmbedder("./data/datasets/POS/conll2000/", model, tokenizer, cutoff=10000)
-    chunk = NERValidator(chunk_embedder)
-    chunk.train()
-    chunk_f1, chunk_acc = chunk.get_results()
-    del chunk
-    gc.collect()
-
-    print("\n\nNER")
-    print(f"\nBest F1 Score: {ner_f1:.3f}")
-    print(f"Best Accuracy: {ner_acc:.3f}")
-
-    print("\n\nRelation Extraction")
-    print(f"\nBest F1 Score: {re_f1:.3f}")
-    print(f"Best Accuracy: {re_acc:.3f}")
-
-    print("\n\nChunking")
-    print(f"\nBest F1 Score: {chunk_f1:.3f}")
-    print(f"Best Accuracy: {chunk_acc:.3f}")
+    return results
 
 
 if __name__ == "__main__":
-    model_name = "gaunernst/bert-small-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, add_prefix_space=True)
-    model = AutoModel.from_pretrained(model_name)
-    evaluate(model, tokenizer)
+    model_names = [
+        "Alibaba-NLP/gte-multilingual-base",
+        "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+    ]
+    # "facebook/bart-large-mnli",
+    # "HIT-TMG/KaLM-embedding-multilingual-mini-v1",
+    # "Snowflake/snowflake-arctic-embed-l-v2.0",
+    # "sentence-transformers/all-MiniLM-L6-v2",
+    # "intfloat/multilingual-e5-large",
+    # "BAAI/bge-small-en-v1.5",
+    # "jinaai/jina-embeddings-v5-text-small",
+    # "microsoft/deberta-v3-base"
+
+    all_results = []
+    for model_name in model_names:
+        print(f"\nEvaluating {model_name}...")
+        result = evaluate_model(model_name)
+        all_results.append(result)
+
+    df = pd.DataFrame(all_results)
+    print("\n\nBenchmark Results:")
+    print(df)
+
+    df.to_csv("benchmark_results.csv", index=False)

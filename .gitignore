@@ -8,3 +8,4 @@ launch.sh
 data_unprocessed
 data/datasets
 *.back
+*.csv
