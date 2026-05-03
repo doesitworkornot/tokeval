@@ -1,7 +1,10 @@
 """Validator module for training and evaluating NER and RE classifiers using pre-computed embeddings."""
 
+import multiprocessing as mp
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 
+import numpy as np
 import torch
 from seqeval.metrics import accuracy_score, classification_report
 from sklearn.metrics import accuracy_score as sklearn_accuracy_score
@@ -55,6 +58,8 @@ class Validator:
 
         self.best_f1 = 0.0
         self.best_acc = 0.0
+        self.f1_ci_low = 0.0
+        self.f1_ci_high = 0.0
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.classifier.to(self.device)
@@ -72,7 +77,6 @@ class Validator:
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
         )
-
         val_loader = DataLoader(
             self.val_ds,
             batch_size=self.batch_size * 3,
@@ -122,9 +126,8 @@ class Validator:
 
     def _evaluate(self, loader: DataLoader) -> dict[str, float]:
         self.classifier.eval()
-
-        all_preds = []
-        all_labels = []
+        seq_preds: list[list] = []
+        seq_labels: list[list] = []
 
         with torch.no_grad():
             for batch in loader:
@@ -134,53 +137,113 @@ class Validator:
                 logits = self.classifier(embeddings=embeddings)["logits"]
                 preds = torch.argmax(logits, dim=-1)
 
-                all_preds.extend(preds.cpu().tolist())
-                all_labels.extend(labels.cpu().tolist())
+                if labels.dim() == 1:
+                    # Один токен на сэмпл — каждый токен оборачиваем в список
+                    for pr, la in zip(preds.cpu().tolist(), labels.cpu().tolist(), strict=False):
+                        seq_preds.append([pr])
+                        seq_labels.append([la])
+                else:
+                    # Несколько токенов на сэмпл [batch_size, seq_len]
+                    for i in range(labels.size(0)):
+                        seq_preds.append(preds[i].cpu().tolist())
+                        seq_labels.append(labels[i].cpu().tolist())
 
-        return self._compute_metrics(all_preds, all_labels)
+        return self._compute_metrics(seq_preds, seq_labels)
 
     # ------------------ METRICS ------------------
 
-    def _compute_metrics(self, preds: list, labels: list) -> dict[str, float]:
+    def _bootstrap_worker(self, args: tuple) -> tuple[float, float]:
+        seq_true_labels, seq_true_preds, seed = args
+        rng = np.random.default_rng(seed)
+        n = len(seq_true_labels)
+
+        indices = rng.integers(0, n, n)
+        sample_labels = [seq_true_labels[i] for i in indices]
+        sample_preds = [seq_true_preds[i] for i in indices]
+
+        report = classification_report(sample_labels, sample_preds, output_dict=True, zero_division=0)
+        f1 = report["micro avg"]["f1-score"]
+        acc = accuracy_score(sample_labels, sample_preds)
+
+        return f1, acc
+
+    def _compute_metrics(
+        self,
+        preds: list[list[int]],
+        labels: list[list[int]],
+        n_bootstrap: int = 100,
+        alpha: float = 0.95,
+        n_jobs: int = 4,
+    ) -> dict[str, float]:
         ignore_label = -100
 
-        true_preds = []
-        true_labels = []
+        seq_true_labels: list[list[str]] = []
+        seq_true_preds: list[list[str]] = []
 
-        for pr, la in zip(preds, labels, strict=False):
-            if la == ignore_label:
-                continue
-            true_preds.append(self.id2label[pr])
-            true_labels.append(self.id2label[la])
+        for pred_seq, label_seq in zip(preds, labels, strict=False):
+            filtered_labels, filtered_preds = [], []
+            for pr, la in zip(pred_seq, label_seq, strict=False):
+                if la == ignore_label:
+                    continue
+                filtered_labels.append(self.id2label[la])
+                filtered_preds.append(self.id2label[pr])
+            if filtered_labels:
+                seq_true_labels.append(filtered_labels)
+                seq_true_preds.append(filtered_preds)
 
-        # классификационный отчет
-        report = classification_report(
-            [true_labels],
-            [true_preds],
-            output_dict=True,
-            zero_division=0,
-        )
-
+        # --- точечная оценка ---
+        report = classification_report(seq_true_labels, seq_true_preds, output_dict=True, zero_division=0)
         f1 = report["micro avg"]["f1-score"]
-        acc = accuracy_score(true_labels, true_preds)
+        acc = accuracy_score(seq_true_labels, seq_true_preds)
 
-        return {"f1": f1, "accuracy": acc}
+        # --- параллельный bootstrap ---
+        seeds = np.random.SeedSequence().spawn(n_bootstrap)
+        tasks = [(seq_true_labels, seq_true_preds, int(s.generate_state(1)[0])) for s in seeds]
+
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_jobs, mp_context=ctx) as pool:
+            results = list(pool.map(self._bootstrap_worker, tasks))
+
+        f1_scores, acc_scores = zip(*results, strict=False)
+
+        # --- доверительные интервалы ---
+        lower_q = (1 - alpha) / 2
+        upper_q = 1 - lower_q
+
+        f1_ci = np.quantile(f1_scores, [lower_q, upper_q])
+        acc_ci = np.quantile(acc_scores, [lower_q, upper_q])
+
+        print(f"Sentences evaluated : {len(seq_true_labels)}")
+        print(f"Point F1            : {f1:.4f}")
+        print(f"Bootstrap mean F1   : {np.mean(f1_scores):.4f}  (Δ={abs(f1 - np.mean(f1_scores)):.4f})")
+        print(f"95% CI F1           : [{f1_ci[0]:.4f}, {f1_ci[1]:.4f}]")
+
+        return {
+            "f1": f1,
+            "f1_ci_low": float(f1_ci[0]),
+            "f1_ci_high": float(f1_ci[1]),
+            "accuracy": acc,
+            "accuracy_ci_low": float(acc_ci[0]),
+            "accuracy_ci_high": float(acc_ci[1]),
+        }
 
     # ------------------ BEST METRIC TRACKING ------------------
 
     def _update_best(self, metrics: dict[str, float]) -> None:
         if metrics["f1"] > self.best_f1:
             self.best_f1 = metrics["f1"]
+            self.f1_ci_low = metrics["f1_ci_low"]
+            self.f1_ci_high = metrics["f1_ci_high"]
             self.best_acc = metrics["accuracy"]
 
-    def get_results(self) -> tuple[float, float]:
+    def get_results(self) -> tuple[float, float, float, float]:
         """Return the best F1 score and accuracy achieved during training.
 
         Returns:
-            A tuple containing the best F1 score and best accuracy.
+            tuple of floats with F1-score, its lower CI bound, upper CI bound, and accuracy
 
         """
-        return self.best_f1, self.best_acc
+        return self.best_f1, self.f1_ci_low, self.f1_ci_high, self.best_acc
 
 
 class NERValidator(Validator):
@@ -237,7 +300,6 @@ class REValidator(Validator):
 
         """
         train_ds, val_ds = embedder.get_embeddings()
-
         super().__init__(
             hidden_size=embedder.hidden_size * 2,
             id2label=embedder.id2label,
@@ -246,12 +308,54 @@ class REValidator(Validator):
             collate_fn=self.collate_fn,
         )
 
-    def _compute_metrics(self, preds: list, labels: list) -> dict[str, float]:
+    def _evaluate(self, loader: DataLoader) -> dict[str, float]:
+        self.classifier.eval()
+        all_preds: list[int] = []
+        all_labels: list[int] = []
+
+        with torch.no_grad():
+            for batch in loader:
+                embeddings = batch["embeddings"].to(self.device)
+                labels = batch["labels"].to(self.device)
+
+                logits = self.classifier(embeddings=embeddings)["logits"]
+                preds = torch.argmax(logits, dim=-1)
+
+                all_preds.extend(preds.cpu().tolist())
+                all_labels.extend(labels.cpu().tolist())
+
+        return self._compute_metrics(all_preds, all_labels)
+
+    def _re_bootstrap_worker(self, args: tuple) -> tuple[float, float]:
+        """Одна bootstrap-итерация для RE. Запускается в отдельном процессе."""
+        true_labels, true_preds, seed = args
+        rng = np.random.default_rng(seed)
+        n = len(true_labels)
+
+        indices = rng.integers(0, n, n)
+        sample_labels = true_labels[indices]
+        sample_preds = true_preds[indices]
+
+        report = sklearn_classification_report(
+            sample_labels,
+            sample_preds,
+            output_dict=True,
+            zero_division=0,
+        )
+        return report["weighted avg"]["f1-score"], sklearn_accuracy_score(sample_labels, sample_preds)
+
+    def _compute_metrics(
+        self,
+        preds: list[int],
+        labels: list[int],
+        n_bootstrap: int = 100,
+        alpha: float = 0.95,
+        n_jobs: int = 8,
+    ) -> dict[str, float]:
         ignore_label = -100
 
-        # одномерные списки классов
-        true_preds = []
-        true_labels = []
+        true_preds: list[str] = []
+        true_labels: list[str] = []
 
         for pr, la in zip(preds, labels, strict=False):
             if la == ignore_label:
@@ -259,12 +363,49 @@ class REValidator(Validator):
             true_preds.append(self.id2label[pr])
             true_labels.append(self.id2label[la])
 
-        # sklearn подходит для RE (одиночные классы)
-        report = sklearn_classification_report(true_labels, true_preds, output_dict=True, zero_division=0)
-        f1 = report["weighted avg"]["f1-score"]
-        acc = sklearn_accuracy_score(true_labels, true_preds)
+        true_preds_arr = np.array(true_preds)
+        true_labels_arr = np.array(true_labels)
 
-        return {"f1": f1, "accuracy": acc}
+        # --- точечная оценка ---
+        report = sklearn_classification_report(
+            true_labels_arr,
+            true_preds_arr,
+            output_dict=True,
+            zero_division=0,
+        )
+        f1 = report["weighted avg"]["f1-score"]
+        acc = sklearn_accuracy_score(true_labels_arr, true_preds_arr)
+
+        # --- параллельный bootstrap ---
+        seeds = np.random.SeedSequence().spawn(n_bootstrap)
+        tasks = [(true_labels_arr, true_preds_arr, int(s.generate_state(1)[0])) for s in seeds]
+
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_jobs, mp_context=ctx) as pool:
+            results = list(pool.map(self._re_bootstrap_worker, tasks))
+
+        f1_scores, acc_scores = zip(*results, strict=False)
+
+        # --- доверительные интервалы ---
+        lower_q = (1 - alpha) / 2
+        upper_q = 1 - lower_q
+
+        f1_ci = np.quantile(f1_scores, [lower_q, upper_q])
+        acc_ci = np.quantile(acc_scores, [lower_q, upper_q])
+
+        print(f"Samples evaluated   : {len(true_labels)}")
+        print(f"Point F1            : {f1:.4f}")
+        print(f"Bootstrap mean F1   : {np.mean(f1_scores):.4f}  (Δ={abs(f1 - np.mean(f1_scores)):.4f})")
+        print(f"95% CI F1           : [{f1_ci[0]:.4f}, {f1_ci[1]:.4f}]")
+
+        return {
+            "f1": f1,
+            "f1_ci_low": float(f1_ci[0]),
+            "f1_ci_high": float(f1_ci[1]),
+            "accuracy": acc,
+            "accuracy_ci_low": float(acc_ci[0]),
+            "accuracy_ci_high": float(acc_ci[1]),
+        }
 
     @staticmethod
     def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
@@ -282,7 +423,6 @@ class REValidator(Validator):
         e1 = torch.stack([f["e1_embedding"] for f in batch])
         e2 = torch.stack([f["e2_embedding"] for f in batch])
         labels = torch.tensor([f["label"] for f in batch])
-
         return {
             "embeddings": torch.cat([e1, e2], dim=-1),
             "labels": labels,

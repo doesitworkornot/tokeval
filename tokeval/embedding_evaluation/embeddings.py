@@ -8,6 +8,7 @@ embeddings for the respective tasks, and provide methods to retrieve
 """
 
 import json
+import random
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -28,6 +29,7 @@ class Embedder:
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
         cutoff: int | None = None,
+        cutoff_mode: str = "determined",
     ) -> None:
         """Initialize the Embedder class for embedding datasets for token classification tasks.
 
@@ -36,6 +38,8 @@ class Embedder:
             model: The pre-trained model to be used for embedding.
             tokenizer: The tokenizer corresponding to the pre-trained model.
             cutoff: An optional integer to limit the number of samples processed from the dataset.
+            cutoff_mode: an string that could be 'determined' or 'random'
+                decides if sampling from data should be random
 
         """
         self.dataset_path = Path(dataset_path)
@@ -43,6 +47,7 @@ class Embedder:
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.cutoff = cutoff
+        self.cutoff_mode = cutoff_mode
 
         self.label2id = self._load_json("labels.json")
         self.id2label = {v: k for k, v in self.label2id.items()}
@@ -63,9 +68,24 @@ class Embedder:
 
         data = []
         with open(path, encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if self.cutoff and i >= self.cutoff:
-                    break
+            lines = f.readlines()
+
+        total_lines = len(lines)
+
+        if self.cutoff:
+            if self.cutoff_mode == "determined":  # Take first N lines
+                selected_indices = range(min(self.cutoff, total_lines))
+            elif self.cutoff_mode == "random":  # Sample N random lines
+                num_samples = min(self.cutoff, total_lines)
+                selected_indices = sorted(random.sample(range(total_lines), num_samples))
+            else:
+                raise ValueError(f"Unknown cutoff_mode: {self.cutoff_mode}. Use 'determined' or 'random'")
+
+            for i in selected_indices:
+                data.append(json.loads(lines[i]))
+        else:
+            # No cutoff, load all lines
+            for line in lines:
                 data.append(json.loads(line))
 
         return Dataset.from_list(data)
