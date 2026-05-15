@@ -54,18 +54,8 @@ def evaluate_model(model_name: str, cutoff: int = 10000) -> dict:
 
 if __name__ == "__main__":
     model_names = [
-        "BAAI/bge-large-en-v1.5",
-        "BAAI/bge-m3",
-        "Qwen/Qwen3-1.7B",
+        "Qwen/Qwen3.5-0.8B",
     ]
-    # model_names = [
-    #     "bert-base-uncased",
-
-    # ]
-    #  "sentence-transformers/all-MiniLM-L6-v2",
-    #     "google/embeddinggemma-300m",
-    #     "intfloat/multilingual-e5-large",
-    #     "Snowflake/snowflake-arctic-embed-l-v2.0",
 
     all_results = []
     for model_name in model_names:
